@@ -1,0 +1,9 @@
+{
+  "name": "paper-notion-agent-md-converter",
+  "version": "1.0.0",
+  "description": "Markdown to Notion converter using Martian",
+  "private": true,
+  "dependencies": {
+    "@tryfabric/martian": "^1.2.4"
+  }
+}
