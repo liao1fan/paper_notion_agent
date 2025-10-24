@@ -396,9 +396,8 @@ def markdown_to_notion_blocks(markdown_text: str) -> List[Dict[str, Any]]:
         doc = Document(markdown_text)
         blocks = renderer.render(doc)
 
-    # 注：Notion API 在单次调用中有 block 数量限制，但可通过分页处理
-    # 这里不截断，由调用方根据需要处理分页
-    return blocks
+    # Notion API 限制：单次创建页面最多 100 个 children blocks
+    return blocks[:100]
 
 
 # 用于测试

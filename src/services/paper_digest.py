@@ -594,19 +594,25 @@ async def generate_paper_digest(
 # 要求（⚠️ 严格执行）
 1. **必须严格按照模板结构**，包含所有章节
 2. **优先使用 PDF 全文内容**，其次参考小红书内容
-3. **详细填充以下章节**：
+3. **内容精简高效**：
+   - 关键概念用列表/表格表示，避免过长段落
+   - 每个章节控制在 3-5 个自然段落
+   - 详细内容用概述 + 要点的方式呈现
+   - 避免重复冗余的说明
+4. **详细填充以下章节**：
    - 文章背景与基本观点
    - 现有解决方案的思路与问题
    - 本文提出的思想与方法
    - 方法实现细节
    - 方法有效性证明（实验）
    - 局限性与未来方向
-4. **如果信息不足**，明确标注 "[信息不足]"
-5. **保持学术性和专业性**
-6. **使用 Markdown 格式**
-7. **基本信息必须准确填写**（包括完整日期、标签、项目页、其他资源）
+5. **如果信息不足**，明确标注 "[信息不足]"
+6. **保持学术性和专业性**
+7. **使用 Markdown 格式**，充分利用标题、列表、表格等结构化元素
+8. **基本信息必须准确填写**（包括完整日期、标签、项目页、其他资源）
+9. **输出长度控制**：确保最终 Markdown 整理转换为 Notion blocks 后不超过 100 个块（通常 5000-8000 字符可保证）
 
-请输出完整的论文整理（Markdown格式）：
+请输出精简高效的论文整理（Markdown格式）：
 """
 
         response = await _openai_client.chat.completions.create(
@@ -765,8 +771,8 @@ async def save_digest_to_notion(
         # 转换 Markdown 为 Notion blocks
         blocks = _markdown_to_notion_blocks(digest_content)
 
-        # 注：Notion API 限制单次最多 100 个 children blocks
-        # 如果超过，需要分批创建。这里直接传所有 blocks，Notion API 会自动处理
+        # Notion API 限制：单次创建页面最多 100 个 children blocks
+        # markdown_to_notion_blocks 已经做了截断处理
         response = await client.pages.create(
             parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
             properties=properties,
