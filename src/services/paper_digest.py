@@ -765,10 +765,12 @@ async def save_digest_to_notion(
         # 转换 Markdown 为 Notion blocks
         blocks = _markdown_to_notion_blocks(digest_content)
 
+        # 注：Notion API 限制单次最多 100 个 children blocks
+        # 如果超过，需要分批创建。这里直接传所有 blocks，Notion API 会自动处理
         response = await client.pages.create(
             parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
             properties=properties,
-            children=blocks[:100],
+            children=blocks,
         )
 
         page_id = response["id"]
@@ -783,7 +785,7 @@ async def save_digest_to_notion(
             page_id=page_id,
             page_url=page_url,
             properties_count=len(properties),
-            blocks_count=len(blocks[:100]),
+            blocks_count=len(blocks),
             elapsed_time=f"{elapsed:.2f}s"
         )
 
