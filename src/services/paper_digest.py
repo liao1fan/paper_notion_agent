@@ -21,7 +21,7 @@ import httpx
 import fitz  # PyMuPDF
 import time
 
-from agents import Agent, function_tool
+from agents import Agent, function_tool, Runner
 from openai import AsyncOpenAI
 from ..utils.logger import get_logger
 
@@ -179,19 +179,29 @@ async def extract_paper_metadata(
 5. 如果信息不足，使用 null 值
 """
 
-        response = await _openai_client.chat.completions.create(
+        # 使用 Agent 替代直接的 LLM 调用
+        metadata_extraction_agent = Agent(
+            name="metadata_extraction_agent",
+            instructions="你是专业的论文信息提取专家。你必须准确完整地提取论文的所有元数据。请严格按照用户的要求，以 JSON 格式返回提取的信息。",
             model="gpt-5-mini",
-            messages=[{
-                "role": "system",
-                "content": "你是专业的论文信息提取专家。你必须准确完整地提取论文的所有元数据。"
-            }, {
-                "role": "user",
-                "content": prompt
-            }],
-            response_format={"type": "json_object"}
         )
 
-        extracted_info = json.loads(response.choices[0].message.content)
+        result = await Runner.run(
+            starting_agent=metadata_extraction_agent,
+            input=prompt,
+            max_turns=1
+        )
+
+        # 提取Agent返回的文本内容
+        response_text = result.final_output if hasattr(result, 'final_output') else str(result)
+
+        # 尝试解析 JSON（可能包含在 markdown 代码块中）
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0].strip()
+
+        extracted_info = json.loads(response_text)
 
         # 验证必填字段
         if not extracted_info.get("title"):
@@ -871,13 +881,18 @@ async def generate_paper_digest(
 
 你**必须**根据每张图片的 **Caption 内容**智能决定插入位置，而不是简单地全部堆到一个章节。
 
-### 插入格式（统一使用 HTML）
+### 插入格式（⚠️ 必须统一使用 HTML <figure> 标签）
 ```html
 <figure>
   <img src="{relative_image_path}/{{filename}}" alt="{{fig_type}} {{fig_name}}">
   <figcaption>{{完整caption原文}}</figcaption>
 </figure>
 ```
+
+**重要提示：**
+- ❌ 不要使用 Markdown 图片语法 `![alt](path)`
+- ✅ 必须使用上面的 HTML `<figure>` 标签格式
+- ✅ 确保路径完整：`{relative_image_path}/{{filename}}`
 
 ### 智能选择与插入策略（基于重要性评分）
 
@@ -1014,18 +1029,21 @@ async def generate_paper_digest(
 请输出精简高效的论文整理（Markdown格式，包含智能插入的图片）：
 """
 
-        response = await _openai_client.chat.completions.create(
-            model="gpt-5-mini",  # 使用 gpt-5-mini，大上下文窗口
-            messages=[{
-                "role": "system",
-                "content": "你是专业的论文整理专家，擅长结构化整理学术论文。你必须详细、完整地填充论文整理模板的所有章节。"
-            }, {
-                "role": "user",
-                "content": prompt
-            }],
+        # 使用 Agent 替代直接的 LLM 调用
+        digest_generation_agent = Agent(
+            name="digest_generation_agent",
+            instructions="你是专业的论文整理专家，擅长结构化整理学术论文。你必须详细、完整地填充论文整理模板的所有章节。",
+            model="gpt-5-mini",
         )
 
-        digest_content = response.choices[0].message.content
+        result = await Runner.run(
+            starting_agent=digest_generation_agent,
+            input=prompt,
+            max_turns=1
+        )
+
+        # 提取Agent返回的文本内容
+        digest_content = result.final_output if hasattr(result, 'final_output') else str(result)
 
         # 🔧 备用方案：仅在 LLM 完全没有插入图片时才自动插入核心图片
         # 注意：现在的策略是 LLM 只插入 2-3 张核心图片，所以不需要补充所有遗漏的图片

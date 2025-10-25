@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from ..models.post import Post
 from ..utils.logger import get_logger
 from ..utils.retry import exponential_backoff
+from agents import Agent, Runner
 
 logger = get_logger(__name__)
 
@@ -328,12 +329,10 @@ class XiaohongshuClient:
         try:
             import json
 
-            response = await self.openai_client.chat.completions.create(
-                model="gpt-5-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": """你是小红书内容提取专家。从HTML文本中提取以下信息：
+            # 使用 Agent 替代直接的 LLM 调用
+            html_extraction_agent = Agent(
+                name="html_extraction_agent",
+                instructions="""你是小红书内容提取专家。从HTML文本中提取以下信息：
 1. 博主昵称（blogger_name）
 2. 帖子正文内容（raw_content）- 完整的帖子文字内容
 
@@ -346,16 +345,18 @@ class XiaohongshuClient:
 如果无法找到某个字段，请使用默认值：
 - blogger_name: "未知博主"
 - raw_content: 提取所有看起来像正文的文字内容
-"""
-                    },
-                    {
-                        "role": "user",
-                        "content": f"请从以下HTML文本中提取小红书帖子信息：\n\n{html_text[:4000]}"  # Limit to 4000 chars
-                    }
-                ],
+""",
+                model="gpt-5-mini",
             )
 
-            result_text = response.choices[0].message.content.strip()
+            result = await Runner.run(
+                starting_agent=html_extraction_agent,
+                input=f"请从以下HTML文本中提取小红书帖子信息：\n\n{html_text[:4000]}",
+                max_turns=1
+            )
+
+            result_text = result.final_output if hasattr(result, 'final_output') else str(result)
+            result_text = result_text.strip()
 
             # Parse JSON from response
             # Try to extract JSON from markdown code block if present

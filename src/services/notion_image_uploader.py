@@ -282,6 +282,9 @@ def create_image_blocks_from_markdown(
     从 Markdown 中提取图片引用并创建 Notion image blocks
 
     新策略：用占位符替换图片，保持精确的顺序信息
+    支持两种格式：
+    1. HTML <figure> 标签
+    2. Markdown ![alt](path) 语法
 
     Args:
         markdown_content: Markdown 文本
@@ -298,20 +301,57 @@ def create_image_blocks_from_markdown(
     image_blocks = []
     processed_markdown = markdown_content
 
-    # 正则表达式：匹配 HTML figure 标签
+    # 收集所有图片引用（按出现顺序）
+    all_image_refs = []
+
+    # 模式1：HTML figure 标签
     # 支持多种路径格式：./images/xxx, ../pdfs/{title}/extracted_images/xxx
-    # 关键点：使用 \s* 匹配标签之间的空白符(包括换行)，避免贪婪匹配问题
     figure_pattern = r'<figure>\s*<img[^>]*src="[^"]*?/([^/"]+)"[^>]*alt="([^"]*)"[^>]*>\s*<figcaption>([\s\S]*?)</figcaption>\s*</figure>'
 
-    matches = list(re.finditer(figure_pattern, markdown_content, re.IGNORECASE))
+    for match in re.finditer(figure_pattern, markdown_content, re.IGNORECASE):
+        all_image_refs.append({
+            'type': 'figure',
+            'start': match.start(),
+            'end': match.end(),
+            'filename': match.group(1),
+            'alt_text': match.group(2).strip(),
+            'caption': (match.group(3) or "").strip()
+        })
+
+    # 模式2：Markdown 图片语法 ![alt](path)
+    # 匹配：![...](attachment:xxx:filename.png) 或 ![...](path/to/filename.png)
+    md_image_pattern = r'!\[([^\]]*)\]\((?:attachment:[^:]+:)?([^)]+)\)'
+
+    for match in re.finditer(md_image_pattern, markdown_content):
+        path = match.group(2).strip()
+        # 提取文件名
+        filename = Path(path).name
+        alt_caption = match.group(1).strip()
+
+        all_image_refs.append({
+            'type': 'markdown',
+            'start': match.start(),
+            'end': match.end(),
+            'filename': filename,
+            'alt_text': alt_caption[:100],  # 前100字符作为 alt
+            'caption': alt_caption  # 完整文本作为 caption
+        })
+
+    # 按位置排序
+    all_image_refs.sort(key=lambda x: x['start'])
+
+    # 从后往前处理，避免位置偏移
+    matches = all_image_refs
 
     # 从后往前替换，避免位置偏移
-    for idx, match in enumerate(reversed(matches)):
+    for idx, img_ref in enumerate(reversed(matches)):
         image_idx = len(matches) - 1 - idx  # 真实的图片索引
 
-        filename = match.group(1)
-        alt_text = match.group(2).strip()
-        caption = (match.group(3) or "").strip()
+        filename = img_ref['filename']
+        alt_text = img_ref['alt_text']
+        caption = img_ref['caption']
+        start_pos = img_ref['start']
+        end_pos = img_ref['end']
 
         # 获取对应的 file_upload_id
         file_upload_id = image_upload_map.get(filename)
@@ -329,12 +369,12 @@ def create_image_blocks_from_markdown(
             # 用占位符替换图片标签
             placeholder = f"%%IMAGE_PLACEHOLDER_{image_idx}%%"
             processed_markdown = (
-                processed_markdown[:match.start()] +
+                processed_markdown[:start_pos] +
                 placeholder +
-                processed_markdown[match.end():]
+                processed_markdown[end_pos:]
             )
 
-            logger.debug(f"✅ 图片 {filename} → 占位符 {placeholder}")
+            logger.debug(f"✅ 图片 {filename} ({img_ref['type']}) → 占位符 {placeholder}")
         else:
             # 如果不在映射中，检查是否可以使用 file:// URL
             if images_dir:
@@ -351,25 +391,25 @@ def create_image_blocks_from_markdown(
 
                     placeholder = f"%%IMAGE_PLACEHOLDER_{image_idx}%%"
                     processed_markdown = (
-                        processed_markdown[:match.start()] +
+                        processed_markdown[:start_pos] +
                         placeholder +
-                        processed_markdown[match.end():]
+                        processed_markdown[end_pos:]
                     )
 
-                    logger.debug(f"✅ 使用本地文件 URL: {filename} → {placeholder}")
+                    logger.debug(f"✅ 使用本地文件 URL: {filename} ({img_ref['type']}) → {placeholder}")
                 else:
                     logger.warning(f"⚠️  图片文件不存在: {local_image_path}")
                     # 移除图片标签
                     processed_markdown = (
-                        processed_markdown[:match.start()] +
-                        processed_markdown[match.end():]
+                        processed_markdown[:start_pos] +
+                        processed_markdown[end_pos:]
                     )
             else:
                 logger.warning(f"⚠️  图片不在上传映射中: {filename}")
                 # 移除图片标签
                 processed_markdown = (
-                    processed_markdown[:match.start()] +
-                    processed_markdown[match.end():]
+                    processed_markdown[:start_pos] +
+                    processed_markdown[end_pos:]
                 )
 
     return processed_markdown, image_blocks
