@@ -536,6 +536,7 @@ async def generate_paper_digest(
     keywords: Annotated[str, "关键词列表（JSON数组字符串）"] = "[]",
     project_page: Annotated[str, "项目主页"] = "",
     other_resources: Annotated[str, "其他资源"] = "",
+    pdf_path: Annotated[str, "PDF文件路径（用于提取图片，可选）"] = "",
 ) -> str:
     """
     生成结构化论文整理
@@ -564,6 +565,68 @@ async def generate_paper_digest(
     with open(template_path, 'r', encoding='utf-8') as f:
         template_content = f.read()
 
+    # 提取 PDF 中的图片（如果提供了 PDF 路径）
+    images_info = ""
+    if pdf_path and Path(pdf_path).exists():
+        try:
+            logger.info("🖼️  开始提取 PDF 中的图片", pdf_path=pdf_path[:100])
+            from .pdf_image_extractor import PDFImageExtractor
+
+            # 将图片保存到标准位置：paper_digest/pdfs/extracted_images/
+            images_dir = PDF_DIR / "extracted_images"
+            images_dir.mkdir(parents=True, exist_ok=True)
+
+            extractor = PDFImageExtractor(str(images_dir))
+            images, blocks = extractor.extract(pdf_path)
+
+            if images:
+                # 智能选择重要图片（而不是全部使用）
+                from .image_selector import select_important_images
+
+                selected_images = select_important_images(images, max_images=6)
+
+                # 格式化选中的图片信息供 LLM 使用
+                images_list = "\\n".join([
+                    f"- 第 {img['page']} 页：{img['filename']} ({img['width']}x{img['height']} {img['format'].upper()}) - Caption: {img.get('caption', '(无)') if img.get('caption') else '(无)'}"
+                    for img in selected_images
+                ])
+                images_info = f"""
+# 论文关键图片（共 {len(selected_images)} 张，已从 {len(images)} 张中精选）
+
+{images_list}
+
+**说明**：以下图片已根据重要性精选，应在适当位置插入对应的图片。
+图片文件已保存在本地，可直接引用。
+在 Markdown 中使用以下格式引用图片：
+```
+<figure>
+  <img src="./images/{{filename}}" alt="图片描述">
+  <figcaption>Figure N: 图片说明</figcaption>
+</figure>
+```
+
+请在以下位置插入图片：
+- 方法章节：插入展示核心方法或架构的图片
+- 实验结果章节：插入展示对比结果或性能指标的图片
+- 其他相关章节：根据内容需要插入对应的图片
+"""
+
+                logger.info(
+                    "✅ 图片提取和选择完成",
+                    total_images=len(images),
+                    selected_images=len(selected_images),
+                    images_dir=str(images_dir)
+                )
+                # 保存图片信息到全局变量供后续使用（仅保存选中的）
+                _current_paper["extracted_images"] = selected_images
+                _current_paper["images_dir"] = str(images_dir)
+            else:
+                logger.info("ℹ️  PDF 中未找到可提取的图片")
+
+        except Exception as e:
+            logger.warning(f"提取 PDF 图片失败，继续生成没有图片的 Markdown: {e}")
+            # 继续不中断，只记录警告
+
     try:
         logger.info("✍️ 开始生成论文整理（LLM 调用 2/2）", paper_title=paper_title[:100])
         prompt = f"""
@@ -588,6 +651,8 @@ async def generate_paper_digest(
 # PDF 全文内容（重点参考）
 {pdf_content[:20000] if pdf_content else "[未提供PDF内容]"}
 
+{images_info}
+
 # 整理模板
 {template_content}
 
@@ -611,6 +676,11 @@ async def generate_paper_digest(
 7. **使用 Markdown 格式**，充分利用标题、列表、表格等结构化元素
 8. **基本信息必须准确填写**（包括完整日期、标签、项目页、其他资源）
 9. **输出长度控制**：确保最终 Markdown 整理转换为 Notion blocks 后不超过 100 个块（通常 5000-8000 字符可保证）
+10. **图片集成**（如果提供了图片信息）：
+    - 在适当位置插入图片引用（如方法章节、结果章节等）
+    - 使用提供的 HTML figure 标签格式引用图片
+    - 每张图片都应有清晰的描述和说明
+    - 确保图片引用与文本内容逻辑对应
 
 请输出精简高效的论文整理（Markdown格式）：
 """
@@ -768,11 +838,19 @@ async def save_digest_to_notion(
         if other_resources:
             properties["Other Resources"] = {"rich_text": [{"text": {"content": other_resources[:2000]}}]}
 
-        # 转换 Markdown 为 Notion blocks
-        blocks = _markdown_to_notion_blocks(digest_content)
+        # 转换 Markdown 为 Notion blocks（包含图片处理）
+        blocks = await _markdown_to_notion_blocks_with_images(digest_content)
 
         # Notion API 限制：单次创建页面最多 100 个 children blocks
-        # markdown_to_notion_blocks 已经做了截断处理
+        # 如果超过 100 个，进行切片处理
+        if len(blocks) > 100:
+            logger.warning(
+                f"⚠️  Blocks 超过 100 个限制 ({len(blocks)}，已截断到 100)",
+                original_count=len(blocks),
+                truncated_count=100
+            )
+            blocks = blocks[:100]
+
         response = await client.pages.create(
             parent={"database_id": os.getenv('NOTION_DATABASE_ID')},
             properties=properties,
@@ -837,6 +915,145 @@ def _extract_chinese_abstract(digest_content: str) -> str:
 
     # Fallback: 使用前200字符
     return digest_content[:200].replace('#', '').strip()
+
+
+async def _markdown_to_notion_blocks_with_images(markdown_text: str) -> list:
+    """
+    将 Markdown 转换为 Notion API blocks（包含图片处理）
+
+    1. 从全局变量中获取已提取的图片信息
+    2. 从 Markdown 中提取图片引用和创建 image blocks
+    3. 将文本 blocks 和图片 blocks 交错排列
+    4. 保持原始 Markdown 的结构顺序
+
+    Args:
+        markdown_text: Markdown 文本（可能包含 HTML figure 标签）
+
+    Returns:
+        Notion API blocks 列表（包含文本和图片 blocks）
+    """
+    global _current_paper
+
+    try:
+        from .notion_markdown_converter import markdown_to_notion_blocks
+        from .notion_image_uploader import (
+            create_image_blocks_from_markdown,
+            interleave_blocks_with_images,
+            NotionImageUploader
+        )
+
+        # 第一步：获取已提取的图片信息（如果有）
+        extracted_images = _current_paper.get("extracted_images", [])
+        images_dir = _current_paper.get("images_dir", "")
+
+        if not extracted_images or not images_dir:
+            # 没有提取到图片，直接转换 Markdown
+            logger.info("未找到已提取的图片，仅转换 Markdown")
+            text_blocks = markdown_to_notion_blocks(markdown_text)
+            return text_blocks
+
+        # 检查 images_dir 是否存在，如果不存在则检查备选路径
+        images_path = Path(images_dir)
+        if not images_path.exists():
+            # 尝试从 digest_content 推断图片目录
+            logger.warning(f"图片目录不存在: {images_dir}，尝试查找...")
+            # PDF 可能在 paper_digest/pdfs/，提取的图片在 paper_digest/pdfs/extracted_images/
+            alt_images_dir = PROJECT_ROOT / "paper_digest" / "pdfs" / "extracted_images"
+            if alt_images_dir.exists():
+                images_dir = str(alt_images_dir)
+                images_path = alt_images_dir
+                logger.info(f"找到备选图片目录: {images_dir}")
+            else:
+                logger.warning("未找到图片目录，将仅转换 Markdown")
+                text_blocks = markdown_to_notion_blocks(markdown_text)
+                return text_blocks
+
+        # 第二步：创建图片文件名到 file_upload_id 的映射
+        # ⚠️ 注意：在实际使用中，需要使用 Notion API 上传图片
+        # 当前实现使用外部 URL（如果有）或提示需要上传
+        image_upload_map = {}
+        failed_images = []
+
+        notion_token = os.getenv('NOTION_TOKEN')
+        if notion_token and images_dir:
+            try:
+                logger.info("开始上传提取的图片到 Notion")
+                uploader = NotionImageUploader(notion_token)
+
+                # 准备图片文件列表
+                images_to_upload = [
+                    str(Path(images_dir) / img['filename'])
+                    for img in extracted_images
+                    if Path(images_dir, img['filename']).exists()
+                ]
+
+                if images_to_upload:
+                    # 批量上传图片
+                    upload_map, failed = await uploader.upload_images_batch(images_to_upload)
+                    image_upload_map = upload_map
+                    failed_images = failed
+
+                    logger.info(
+                        "✅ 图片上传完成",
+                        uploaded_count=len(upload_map),
+                        failed_count=len(failed)
+                    )
+                else:
+                    logger.warning("未找到本地提取的图片文件")
+
+            except Exception as e:
+                logger.warning(f"Notion 图片上传失败，使用外部 URL 替代: {e}")
+                # 降级处理：使用本地文件路径作为外部 URL（如果在本地开发环境）
+                for img in extracted_images:
+                    local_path = img.get('local_path', '')
+                    if local_path:
+                        image_upload_map[img['filename']] = f"file://{local_path}"
+
+        # 第三步：从 Markdown 提取图片引用并创建 image blocks
+        cleaned_markdown, image_blocks = create_image_blocks_from_markdown(
+            markdown_text,
+            image_upload_map,
+            images_dir
+        )
+
+        logger.info(
+            "提取的 image blocks",
+            count=len(image_blocks),
+            upload_map_size=len(image_upload_map)
+        )
+
+        # 第四步：转换文本部分为 blocks
+        text_blocks = markdown_to_notion_blocks(cleaned_markdown)
+
+        # 第五步：交错排列文本和图片 blocks
+        if image_blocks:
+            final_blocks = interleave_blocks_with_images(
+                text_blocks,
+                image_blocks,
+                markdown_text
+            )
+            logger.info(
+                "Block 交错排列完成",
+                text_count=len(text_blocks),
+                image_count=len(image_blocks),
+                total_count=len(final_blocks)
+            )
+        else:
+            final_blocks = text_blocks
+            logger.info("未找到有效的图片引用，仅使用文本 blocks")
+
+        return final_blocks
+
+    except Exception as e:
+        logger.error(f"Markdown 转换（含图片）失败: {e}")
+        import traceback
+        traceback.print_exc()
+        # 降级处理：仅返回文本 blocks
+        try:
+            from .notion_markdown_converter import markdown_to_notion_blocks
+            return markdown_to_notion_blocks(markdown_text)
+        except:
+            return []
 
 
 def _markdown_to_notion_blocks(markdown_text: str) -> list:
