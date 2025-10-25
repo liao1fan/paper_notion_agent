@@ -14,6 +14,15 @@ from ..utils.logger import get_logger
 from ..utils.retry import exponential_backoff
 from agents import Agent, Runner
 
+# 导入模型
+import sys
+from pathlib import Path
+# 添加项目根目录到 sys.path
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+from init_model import get_tool_model
+
 logger = get_logger(__name__)
 
 
@@ -346,7 +355,7 @@ class XiaohongshuClient:
 - blogger_name: "未知博主"
 - raw_content: 提取所有看起来像正文的文字内容
 """,
-                model="gpt-5-mini",
+                model=get_tool_model(),
             )
 
             result = await Runner.run(

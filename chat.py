@@ -29,6 +29,7 @@ from agents.tracing import set_tracing_disabled
 from mcp.types import CreateMessageResult, TextContent
 
 from paper_agents import paper_agent, init_paper_agents
+from init_model import init_models
 
 # 加载环境变量
 load_dotenv()
@@ -133,14 +134,9 @@ class PaperChatBot:
         print("  ✅ MCP Sampling（定时任务自动触发）")
         print("\n正在启动...\n")
 
-        # 初始化 OpenAI 客户端
-        openai_client = AsyncOpenAI(
-            api_key=os.getenv('OPENAI_API_KEY'),
-            base_url=os.getenv('OPENAI_BASE_URL', 'https://ai.devtool.tech/proxy/v1'),
-        )
-
-        # 设置默认客户端
-        set_default_openai_client(openai_client, use_for_tracing=False)
+        # 初始化模型（会自动设置默认客户端）
+        factory = init_models()
+        openai_client = factory.get_client()
 
         # 初始化 agents 全局变量
         init_paper_agents(openai_client)

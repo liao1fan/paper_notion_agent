@@ -1,185 +1,164 @@
 # Scaling Long-Horizon LLM Agent via Context-Folding
 
 ## 📋 基本信息
+- **标题**: Scaling Long-Horizon LLM Agent via Context-Folding  
 - **作者**: Weiwei Sun, Miao Lu, Zhan Ling, Kang Liu, Xuesong Yao, Yiming Yang, Jiecao Chen  
 - **机构**: ByteDance Seed; Carnegie Mellon University; Stanford University  
 - **发表时间**: 2025-10-15  
 - **来源**: arXiv (cs.CL)  
-- **论文链接**: https://arxiv.org/abs/2510.11967 (paper id: arXiv:2510.11967)  
-- **标签**: 大模型, 长期任务, 代理(agent), 上下文管理, 强化学习  
+- **论文链接**: https://arxiv.org/abs/2510.11967 (arXiv:2510.11967)  
+- **关键词**: Context-Folding, LLM agent, long-horizon, context management, FoldGRPO, reinforcement learning, task decomposition, agentic coding, deep research  
 - **项目页**: https://context-folding.github.io/  
-- **其他资源**: HuggingFace Paper Page: https://huggingface.co/papers/2510.11967  
+- **其他资源**: https://huggingface.co/papers/2510.11967
+
 ---
 
 ## 📝 摘要 (Abstract)
-本文提出 Context-Folding，一种赋能 LLM agent 主动管理工作上下文的框架。代理可以用 branch 动作进入子轨迹处理子任务，任务完成后用 return 动作将子轨迹“折叠”（fold），移除中间步骤并保留简要结果摘要。为使该行为可学习，作者设计了端到端强化学习算法 FoldGRPO，结合动态折叠的上下文和密集的“过程奖励”（如 Unfolded Token Penalty、Out-of-Scope Penalty）来鼓励有效的任务分解与上下文压缩。在复杂长周期任务（Deep Research 和 SWE）上，折叠代理在主动上下文规模缩小约 10× 的同时，匹配或超越 ReAct 基线，并显著优于基于摘要的上下文管理方法。
+提出 Context-Folding 框架，使 LLM agent 能主动管理工作上下文：通过 branch（建立子轨迹）和 return（折叠子轨迹并保留精简总结）两类动作，把代价高的中间步骤移出主上下文。为学习此行为，设计了端到端强化学习算法 FoldGRPO，利用 token-level 的过程奖励（如 Unfolded Token Penalty、Out-of-Scope Penalty）引导任务分解与上下文压缩。在复杂长周期任务（Deep Research、SWE）上，折叠 agent 在使用约 10× 更小的活跃上下文下匹配或优于 ReAct 基线，并显著优于基于摘要的管理方法。
 
 ---
 
 ## 🎯 研究背景与动机 (Background & Motivation)
 
 ### 问题背景
-随着 LLM 在解决复杂、长时序任务（如深度研究、代理式编程、长期交互等）上的应用增加，代理（agent）在执行任务过程中会把整个交互历史线性累积到单一上下文（context）中。这导致两类主要问题：
-- 性能下降：当上下文长度极长时，模型难以有效检索并利用相关信息，推理质量下降。
-- 计算/效率问题：注意力机制与 KV-cache 开销随上下文增长急剧上升，导致推理成本高且难以扩展。
+- LLM agent 在处理长路径、需多轮交互的任务（如深度研究、agentic coding）时表现优秀，但会由于交互历史线性累积而受上下文长度限制（性能衰减与计算/内存开销）。
+- 线性保留完整交互历史会导致：1) 模型在超长上下文中难以检索关键信息；2) 注意力和 KV-cache 管理成本快速上升。
 
 ### 研究动机
-现有扩展长时序代理能力的方法存在局限：基于摘要的方法在上下文满时后处理会打断推理流且可能丢失关键信息；多代理系统依赖人工设计的工作流，难以端到端优化。作者希望设计一种代理内部可控、可学习的机制，使 agent 能主动将“代价高、对短期推理无关”的操作移出主上下文，同时保留子任务的关键信息，从而延展有效任务视野并提升效率与性能。
+- 现有方法主要靠事后摘要或多 agent 分工来扩展 horizon，但事后摘要会打断推理流，多 agent 系统依赖手工流程且难以端到端训练。
+- 目标：让单一 agent 学会“主动管理”上下文（什么时候为子任务分支、如何折叠保留有用信息），以在不牺牲高层推理连续性的前提下扩展有效任务长度并降低活跃上下文规模。
 
 ### 核心观点
-提出“Context-Folding”机制：通过显式的 branch/return 操作，代理在执行过程中产生临时子轨迹并在完成后“折叠”这些子轨迹，只在主上下文中保留简洁的结果摘要。配套提出 FoldGRPO 强化学习算法与一组过程级奖励，引导代理学会何时分支、如何生成保留信息、何时折叠，从而在不牺牲最终任务效果下显著压缩主动上下文规模。
+- 引入 Context-Folding——通过显式的 branch/return 操作，agent 能把 token 密集型步骤移入可折叠的子轨迹，完成后以简短总结回到主线，从而保持主上下文紧凑且信息充足。
+
+<figure>
+  <img src="../pdfs/Scaling Long-Horizon LLM Agent via Context-Folding/extracted_images/Figure1.png" alt="Figure 1 Examples of context folding in long-horizon tasks: deep research (left) and agentic coding (right).">
+  <figcaption>Figure 1 Examples of context folding in long-horizon tasks: deep research (left) and agentic coding (right).</figcaption>
+</figure>
 
 ---
 
 ## 🔍 现有方法及其局限 (Related Work & Limitations)
 
 ### 现有解决方案
-1. **摘要驱动的上下文压缩**：当上下文接近容量上限时触发对历史进行压缩或摘要（post-hoc summarization）。优点是能即时降低上下文长度；缺点是摘要是被动且后处理，可能丢失对当前推理至关重要的细节并中断思路流。
-2. **多代理/分布式代理系统**：通过多 agent 协同或子代理负责不同子任务，减少单个上下文负担。优点在于任务分工明确；缺点是通常需要人工设计的工作流，且不易进行端到端训练与优化。
-3. **长期记忆/检索机制**：将历史存入外部记忆或检索库，需要时检索回用。能保存大量信息但检索与存储策略需精心设计，且检索成本与相关性问题仍存在。
-4. **局部上下文窗口/层次化上下文**（部分研究）：把上下文分层或滑动窗口，但对如何自动分配信息的重要性与持久性缺乏端到端学习机制。
+1. **Summary-based methods**：在上下文满时对历史摘要压缩（post-hoc summarization），代表工作有若干上下文压缩与检索+生成组合方法。  
+2. **Multi-agent systems**：将任务拆在多个专用 agent 之间分工（例如工具代理、检索代理），通过工作流管理上下文。  
+3. **检索/外存机制**：把历史存到检索库，按需检索以减小当前上下文，但仍需设计高效检索策略和保持推理连贯性。
 
 ### 存在的问题
-- 被动压缩或后处理（摘要）会打断代理的思路连贯性并可能丢失关键信息；
-- 多代理系统依赖手工流程，不易泛化与联合训练；
-- 现有方法难以同时兼顾（1）不打断当前短期推理、（2）自动管理长期信息并且（3）支持端到端学习。
-- 很少有方法从代理自身行动层面（branch/return）设计可学习的上下文管理机制并配套具体的训练奖励。
+- 摘要方法在压缩时会“中断”原有的思路链，可能丢失决策线索，导致子最优解。  
+- 多 agent/手工流程方法不利于端到端训练与泛化。  
+- 检索外存增加系统复杂性：需要额外索引/检索策略与一致性维护，仍然无法保证短期工作上下文的连贯与紧凑。
 
 ---
 
 ## 💡 本文方法 (Proposed Method)
 
 ### 核心思想
-让 LLM agent 主动在运行时创建临时子轨迹（branch）处理局部子任务，完成后用 return 操作生成精简摘要并将子轨迹折叠（fold）出主上下文，只保留有助于后续高层推理的关键信息，从而动态控制主动上下文规模。
+- 通过两种显式动作（branch 与 return）使 agent 在交互中主动建立可折叠子轨迹并在完成后以精简 summary 折回主轨迹，从而管理上下文长度并保留关键信息。
 
 ### 技术路线
-整体流程：
-1. 主轨迹执行，agent 根据当前状态决定是否发起 branch。
-2. 若 branch：进入子轨迹，子轨迹可包含大量 token 消耗的操作（如 web 搜索、代码阅读、长交互）。
-3. 子任务完成后 agent 发出 return 操作，生成一个简洁的 summary/outcome。
-4. 系统将该子轨迹从主上下文移除，仅在主上下文中插入该 summary（fold 操作）。
-5. 通过训练使 agent 学会何时分支、在分支内如何聚焦与何时生成高质量可用的 summary。
+- 机制层面：Context-Folding（branch/return + 折叠子轨迹，保留 summary）。  
+- 学习层面：基于 GRPO 的 FoldGRPO，加入动态 folded contexts 与 token-level 过程奖励，训练 agent 学会何时分支、分解任务、如何撰写有效总结并控制主上下文的 token 消耗。
+
+<figure>
+  <img src="../pdfs/Scaling Long-Horizon LLM Agent via Context-Folding/extracted_images/Figure2.png" alt="Figure 2 (a) Context Folding: a mechanism that enables the agent to actively manage its context through branching and return. (b) FoldGRPO: end-to-end optimization of context folding agent.">
+  <figcaption>Figure 2 (a) Context Folding: a mechanism that enables the agent to actively manage its context through branching and return. (b) FoldGRPO: end-to-end optimization of context folding agent.</figcaption>
+</figure>
 
 ### 关键创新点
-1. **Context-Folding 操作语义化**：将 branch/return/fold 作为 agent 的动作纳入决策空间，使上下文管理成为 agent 可学的行为而非外部策略。
-2. **FoldGRPO：端到端强化学习算法**：将动态折叠的上下文与密集的过程级奖励（token 级别）融合进入 GRPO 风格的 RL 框架，直接训练 agent 的分支与折叠策略。
-3. **过程级奖励设计**：引入特定奖励项（如 Unfolded Token Penalty、Out-of-Scope Penalty 等）来引导 agent 在主上下文中避免高代价操作、在子轨迹中维持聚焦并在 return 时保留对最终任务有用的信息。
-4. **显著减少主动上下文规模**：在长周期任务中实现约 10× 的主动上下文缩减，同时保持或提升任务性能（较 ReAct 等基线）。
+1. **Context-Folding 操作集**：定义 branch/return 两种原语，支持在子轨迹中自由使用工具/检索，回到主线只保留 summary。  
+2. **FoldGRPO（RL 算法）**：在 GRPO 基础上引入动态 folded contexts 与稠密过程奖励以直接优化分支和折叠行为。  
+3. **过程奖励设计**：包括 Unfolded Token Penalty（压缩主上下文中代价高的 token 使用）、Out-of-Scope Penalty（约束子轨迹不偏离子任务目标），以及最终任务奖励，联合引导分解与信息保留。
 
 ---
 
 ## ⚙️ 方法实现细节 (Implementation Details)
 
 ### 算法/模型设计
-- 基于 LLM agent 框架（类似 ReAct 风格），在动作空间中加入两类特殊动作：
-  - branch(action): 创建新的临时子轨迹（子对话上下文/子环境），agent 在该轨迹中独立执行若干步；
-  - return(summary): 结束子轨迹并生成 summary，将子轨迹折叠（从主上下文删除中间步骤），仅把 summary 写入主上下文。
-- 折叠后系统维护两类上下文：
-  - 主上下文（active context）：用于当前高层决策，保持较短；
-  - 折叠历史（folded summaries）：为长时记忆，以紧凑摘要形式存在主上下文或外部存储中。
-- 训练方法：FoldGRPO（一种基于 GRPO 的 RL 变体），引入动态上下文状态（包含是否处于子轨迹、已折叠的信息量等），并设计任务与过程奖励。
+- Agent 接口扩展：在标准 LLM agent 的动作空间上加入两类控制动作：branch(action) 与 return(summary)。branch 创建新的临时上下文轨迹供局部推理与工具调用；return 将子轨迹折叠并将 summary 写回主上下文。  
+- 动态上下文管理：在执行折叠后，从主上下文中删除子轨迹的详细交互，仅保留 summary tokens；FoldGRPO 在训练时直接暴露该动态上下文给模型。
 
-### 关键过程奖励（论文中特别强调）
-- Unfolded Token Penalty：对在主轨迹中出现的“未折叠的高 token 操作”施加惩罚，鼓励 agent 将代价高的操作迁移到子轨迹。
-- Out-of-Scope Penalty：对子轨迹内偏离子任务目标的行为施加惩罚，鼓励子轨迹保持聚焦，避免生成无关或冗长信息。
-- Summary Preservation Reward：对 return 生成的 summary 中保留对最终任务有贡献的信息给予奖励，鼓励高质量压缩。
-- 及最终任务成功/失败的主奖励（objective reward）。
-
-（注：以上奖励名来自论文摘要/正文片段；具体公式、权重和归一化策略在论文中有详细描述或实现，但本整理部分如需完整超出提供片段的公式细节请参见原文或代码。）
-
-### 输入/输出与处理流程
-- 输入：任务提示 + 初始环境信息（例如 research 问题、代码仓库、工具接口等）。
-- 处理流程（高层）：
-  1. Agent 在主上下文决策：普通推理 / 发起 branch。
-  2. branch 后进入子轨迹：可进行工具调用、长文本阅读或检索等。
-  3. 子轨迹完成后 return：生成 concise summary，系统折叠子轨迹。
-  4. 主上下文接入 summary 并继续高层规划，直至任务终止。
-- 输出：最终任务解答或行动序列；同时生成的折叠 summary 被存储以备后续需要（或作为长期记忆）。
+### 技术细节
+- 输入：当前主上下文（包含历史 summaries）、工具观察与任务提示。  
+- 处理流程（关键步骤）：
+  1. Agent 在主上下文决定是否 branch；若 branch 则进入子轨迹子上下文。  
+  2. 在子轨迹内自由进行工具调用、检索与推理；过程奖励会在 token 层面评估行为（如惩罚在主上下文进行 token-heavy 操作）。  
+  3. 决定 return：生成简短 summary（需保留关键信息以助后续决策），折叠子轨迹并回到主上下文。  
+  4. FoldGRPO 更新策略：基于最终任务回报 + 过程奖励进行策略梯度更新（延展 GRPO 的设计以适配动态上下文和稠密奖励）。
+- 输出：最终决策或答案，以及一系列子任务 summaries（保存在主上下文中）。
 
 ### 实现要点
-- 将 fold 操作作为一等动作，需在 tokenizer/上下文管理层与模型交互层实现对应的上下文编辑（即删除子轨迹 tokens、插入 summary token）。
-- 训练时需要能够模拟或实际执行长 token 耗费操作（如检索、工具调用），以学习何时折叠。
-- 奖励设计与平衡（过程奖励 vs 目标奖励）对学习稳定性至关重要。
-- 系统需支持动态 KV-cache 管理与高效上下文重构以实现折叠时的效率收益。
+- Summary 长度/信息量权衡：设计奖励鼓励 summary 同时简洁并包含对最终任务有帮助的关键信息。  
+- 子轨迹范围控制：Out-of-Scope Penalty 抑制子轨迹偏离预定子任务，防止无谓探索。  
+- 训练实践：使用模拟环境与真实工具（如浏览器检索、代码运行）混合训练；训练观察到 RL 强化后具有更积极的分支行为与更高效的 token 使用。
 
 ---
 
 ## 📊 实验与结果 (Experiments & Results)
 
 ### 实验设置
-- **任务/数据集**:
-  - Deep Research：长周期研究类任务（论文中作为长时序、需要大量检索与综合的任务集合）。
-  - SWE（Software Engineering）：代理式编码/软件工程任务（涉及代码库探索、工具调用等长上下文操作）。
-- **基线方法**:
-  - ReAct 风格的标准 agent（无折叠机制）。
-  - 基于摘要的上下文管理方法（post-hoc summarization）。
-  - 可能还包含多-agent 分布式方法（论文中提及多类对比）。
-- **评价指标**:
-  - 最终任务成功率 / 任务绩效（如质量指标、正确率等） — 论文中为主指标。
-  - 主动上下文规模（active context size）：折叠后主上下文 token 数或相对缩减倍数。
-  - 资源/效率指标：推理时间、KV-cache/attention 开销等。
-  - 过程相关指标：折叠频率、summary 长度、子轨迹平均长度等。
+- **数据集 / 任务**：
+  - BrowseComp-Plus（Deep Research 类任务集，N=150）  
+  - SWE-Bench Verified（软件工程类长任务，N=500）  
+- **基线方法**：ReAct 风格 agent（无折叠机制）、摘要（post-hoc summarization）为上下文管理策略的 agent 等。  
+- **评价指标**：任务正确率/Pass@1、scope accuracy、finish rate、主上下文活跃 token 数量、工具调用统计等。
 
-### 主要结果（论文中给出的要点）
-- 在 Deep Research 与 SWE 两类复杂长周期任务上，Context-Folding（FoldGRPO 训练的 folding agent）：
-  - 在性能上匹配或超越 ReAct 基线（在部分任务中取得更好结果）。
-  - 主动上下文规模缩小约 10×（“活跃上下文规模缩小至十分之一”）。
-  - 显著优于基于摘要的上下文管理方法（表明被动摘要不足以替代可学的折叠机制）。
-- 折叠机制带来的效率提升对大上下文成本（attention/KV-cache）具有实际节省作用。
+### 主要结果（概述）
+- FoldGRPO + Context-Folding 的 agent 在两类长周期任务上匹配或超越 ReAct 基线（同规模模型），同时：
+  - 活跃主上下文规模缩小约 10×（即折叠后主上下文更紧凑）；  
+  - 显著优于单纯依赖摘要的上下文管理方法（在保持连贯性的同时降低 token 使用）；  
+  - RL 训练导致更频繁且更聚焦的分支行为（更多有用的工具调用与搜索页数），从而提升最终任务表现与完成率。  
 
-（注：本文档基于论文前两页与摘要信息整理，上述为论文中公开的主要结论。论文原文可能包含具体数值表格、任务细节与消融实验等，因提供文本片段有限，具体表格数值在此标注为 [信息不足]，请参见原文或代码以获取完整实验数据。）
+- 实验中还展示了当任务组合复杂度（需合并多个简单问题以形成更长的交互）提高时，折叠 agent 对上下文长度的鲁棒性优于基线（见下图对比）。
 
-### 结果表（概览式，具体数值缺失时以描述代替）
-| 方法 | 最终任务性能 | 主动上下文规模 | 相对效率 |
-|------|--------------|----------------|----------|
-| ReAct (baseline) | baseline 性能 | 原始上下文规模 | baseline |
-| 摘要-based 管理 | 较 baseline 差/中等 | 中等压缩 | 中等 |
-| Context-Folding (本文) | 匹配或优于 ReAct | ≈10× 更小 | 显著更优 |
+<figure>
+  <img src="../pdfs/Scaling Long-Horizon LLM Agent via Context-Folding/extracted_images/Figure5.png" alt="Figure 5 Left: Pass@1 vs. agent max context length. Right: Pass@1 vs. number of combined questions. Multiple easy questions are combined into a single harder question to increase problem complexity; a higher number of combined questions indicates more required actions and a longer context to answer them correctly. See Section 4.4.2 for details.">
+  <figcaption>Figure 5 Left: Pass@1 vs. agent max context length. Right: Pass@1 vs. number of combined questions. Multiple easy questions are combined into a single harder question to increase problem complexity; a higher number of combined questions indicates more required actions and a longer context to answer them correctly. See Section 4.4.2 for details.</figcaption>
+</figure>
+
+<figure>
+  <img src="../pdfs/Scaling Long-Horizon LLM Agent via Context-Folding/extracted_images/Table1.png" alt="Table 1 Performance on BrowseComp-Plus (N=150) and SWE-Bench Verified (N=500). Boldface indicates the best-performing 36B models. Numbers in parentheses indicate improvement or reduction compared to 327K ReAct agent Seed-OSS-36B baselineψ.">
+  <figcaption>Table 1 Performance on BrowseComp-Plus (N=150) and SWE-Bench Verified (N=500). Boldface indicates the best-performing 36B models. Numbers in parentheses indicate improvement or reduction compared to 327K ReAct agent Seed-OSS-36B baselineψ.</figcaption>
+</figure>
 
 ### 分析与讨论
-- Context-Folding 的主要优势在于将上下文管理变为 agent 的策略决策对象，从而可端到端学习到在何时、如何局部处理长耗时操作并保留最关键的信息。
-- 与被动摘要相比，folding 更加自然地保留推理连贯性与阶段性结果，避免在关键时刻丢失细节。
-- 折叠带来的主动上下文缩减直接降低了 attention/KV-cache 的运行成本，使得 agent 在更长时间尺度上保持可操作性。
-- 奖励设计（如 Unfolded Token Penalty）是促成折叠行为的关键：它给予 agent 明确的信号，促使其在主轨迹避免高 token 操作。
+- FoldGRPO 的稠密过程奖励有效促使 agent 把“高 token 成本”的操作放入可折叠子轨迹，从而减少主上下文的不必要膨胀；折叠后的 summary 保证后续高层决策所需信息被保留。  
+- RL 训练下 agent 的行为更具探索性，但更受约束（通过 Out-of-Scope Penalty），从而在完成率和 scope accuracy 上提升。  
+- 训练成本与实现复杂度较纯生成式基线提高（需要对动态上下文、子轨迹管理及稠密奖励进行工程化支持），但换来更好的长时序扩展能力与效率。
 
 ---
 
 ## ⚠️ 局限性 (Limitations)
-1. **训练复杂度与样本需求**：FoldGRPO 需要在具有长时序、工具调用与子任务结构的环境中进行训练，数据收集与训练成本较高。[部分信息基于方法性质推断]
-2. **奖励设计敏感性**：过程奖励（Unfolded Token Penalty、Out-of-Scope Penalty、Summary Preservation Reward）的权重与形式对学习结果影响大，需调参与任务特定设计，可能影响泛化。
-3. **摘要质量关键**：折叠保留的是 summary 的信息质量；若 summary 丢失关键细节，后续推理可能受损。如何自动评估与保证 summary 的准确性仍需改进。
-4. **离线/在线部署复杂性**：实现 fold 操作需要上下文编辑能力以及与 KV-cache 的动态管理，工程实现复杂，且在异构服务（如 API 限制）下可能受限。
-5. **对某些任务的适用性未知**：对于需要持续保留全部步骤细节或强因果回溯的任务，折叠可能不适用或需要更保守的策略。[信息基于方法逻辑推断]
-
-（若需更精确的局限性列表与量化分析，请参阅论文的 Limitations 段落与附录实验。）
+1. **训练成本与复杂度**：FoldGRPO 依赖强化学习训练与环境模拟，训练时间和工程实现复杂度明显高于直接微调/提示工程方法（论文有专门训练时间成本分析）。  
+2. **summary 质量依赖性**：折叠后保留的信息完全依赖 return 时生成的 summary，若 summary 丢失关键细节会影响后续决策，且 summary 生成策略尚需精细设计。  
+3. **通用性验证有限**：实验主要在 BrowseComp-Plus 与 SWE-Bench 等特定长周期任务集上验证，尚需更多场景（多模态交互、更多真实工具链）来全面评估泛化能力。  
+4. **系统集成复杂**：在真实生产环境把动态折叠、子轨迹管理、KV-cache 等集成到已有 LLM 基础设施需额外工作。
 
 ---
 
 ## 🔮 未来方向 (Future Work)
-1. 自动化与自适应的奖励调优：研究如何元学习或自适应地调整过程奖励，使折叠策略更鲁棒且易于迁移到新任务。
-2. 折叠摘要的可信度评估与补救机制：在 summary 可能遗漏信息时引入回溯机制或检索补全策略（如可按需“展开”某一折叠轨迹）。
-3. 与长期记忆/检索系统结合：将折叠 summary 与外部长期记忆索引结合，按需检索更细粒度信息。
-4. 跨任务与跨域泛化性研究：验证 Context-Folding 在更多任务类型（如多步对话、计划/控制、合作多 agent 系统）上的适用性。
-5. 工程化部署优化：设计高效的上下文编辑与 KV-cache 管理模块，降低实现门槛并支持异构后端（如有限 API）。
+1. 更强的 summary 学习：探索对 summary 的显式信息保留约束（例如信息量/有用性指标）或辅助记忆模块来提高折叠后信息保真度。  
+2. 分层/递归折叠：研究多级折叠（子轨迹内部再分支折叠）与跨任务信息复用策略以进一步扩展 horizon。  
+3. 与检索/外部记忆结合：将折叠 summary 与外部检索库联合使用，兼顾长期记忆与短期紧凑上下文。  
+4. 更广泛的任务与工具链验证：在更多真实世界工具（代码运行、实验记录、多模态采集）上检验并优化 FoldGRPO。  
+5. 更高效的训练：探索离线 RL、行为克隆预训练或更低成本的监督信号来降低训练门槛。
 
 ---
 
 ## 💭 个人思考 (Personal Notes)
-- Context-Folding 通过将上下文管理的权力交还给 agent，实现了“策略化上下文压缩”的理念，这比事后摘要更自然也更符合人类分层思考（分支做笔记、归纳要点然后折叠）。
-- 折叠机制特别适合那些包含大量代价性读写操作（检索、代码阅读、工具调用）的任务场景，比如深度研究与软件工程。
-- 一个有趣的扩展是允许“按需展开”（on-demand unfold）：在后续需要具体证据时，自动或人工触发展开折叠轨迹以恢复详细步骤。
-- 实验结果中的“10× 主动上下文缩减”是非常有吸引力的工程指标，但要评估实际收益还需看推理时间、延迟以及训练成本的整体折中。
+- Context-Folding 提供了一种可解释且可训练的上下文管理范式，比单纯的事后摘要更贴合 agent 的决策流程；在需要大量工具调用或检索的长任务场景极具应用价值（如长周期科研、复杂软件开发）。  
+- 工程实践挑战在于保持 summary 的信息完整性与在训练时平衡探索/约束（过程奖励的设计是关键）。若能配合强检索/记忆模块与更高效训练策略，该方法有望成为长任务 agent 的常用范式。  
+- 值得关注项目页与开源资源（HuggingFace 论文页）以获取实现细节与复现代码。
 
 ---
 
 ## 📚 参考资料 (References)
-- 论文原文: arXiv:2510.11967 — https://arxiv.org/abs/2510.11967  
+- 论文原文（arXiv）: https://arxiv.org/abs/2510.11967  
 - 项目页: https://context-folding.github.io/  
-- HuggingFace Paper Page: https://huggingface.co/papers/2510.11967
+- 论文在 HuggingFace: https://huggingface.co/papers/2510.11967
 
 ---
 
-整理时间: 2025-10-22  
-置信度: 0.85
-
-注：本文整理严格基于论文摘要与提供的 PDF 前两页片段（及项目页/平台链接）完成。论文中应含更完整的算法伪代码、奖励函数具体形式、完整实验数值与消融研究等；若需精确数值、表格与实现代码，请查阅原文主文/附录或项目页代码仓库（如有）。
+整理时间: 2025-10-25  
+置信度: 0.92（基于提供的 PDF 摘要、图表信息与正文片段，数字细节在表格中以图片形式保留；若需精确数值请请求表格文字化提取）

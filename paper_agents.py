@@ -25,6 +25,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # 导入 digest_agent (从 src/services)
 from src.services.paper_digest import digest_agent, _init_digest_globals
 
+# 导入模型
+from init_model import get_tool_model
+
 
 # ============= 主 Agent 工具 =============
 
@@ -133,7 +136,7 @@ paper_agent = Agent(
 
 请保持对话友好、专业。
 """,
-    model="gpt-5-mini",
+    model=get_tool_model(),
     tools=[
         identify_link_type,
     ],

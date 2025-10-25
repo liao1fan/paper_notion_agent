@@ -25,6 +25,15 @@ from agents import Agent, function_tool, Runner
 from openai import AsyncOpenAI
 from ..utils.logger import get_logger
 
+# 导入模型
+import sys
+from pathlib import Path
+# 添加项目根目录到 sys.path
+project_root = Path(__file__).resolve().parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+from init_model import get_tool_model, get_reason_model
+
 # 初始化日志
 logger = get_logger(__name__)
 
@@ -183,7 +192,7 @@ async def extract_paper_metadata(
         metadata_extraction_agent = Agent(
             name="metadata_extraction_agent",
             instructions="你是专业的论文信息提取专家。你必须准确完整地提取论文的所有元数据。请严格按照用户的要求，以 JSON 格式返回提取的信息。",
-            model="gpt-5-mini",
+            model=get_tool_model(),
         )
 
         result = await Runner.run(
@@ -1028,12 +1037,89 @@ async def generate_paper_digest(
 
 请输出精简高效的论文整理（Markdown格式，包含智能插入的图片）：
 """
+#         prompt = f"""
+# 你是论文整理专家。请根据以下信息，**在不改变模板结构的前提下**，生成高质量、专业且信息保真的论文整理（Markdown）。目标：兼顾精炼与**专有名词/术语的完整保留**。
 
+# # 论文基本信息
+# - **标题**: {paper_title}
+# - **作者**: {authors}
+# - **机构**: {affiliations}
+# - **发表时间**: {publication_date}
+# - **期刊/会议**: {venue}
+# - **关键词**: {keywords}
+# - **项目页**: {project_page if project_page else "[无]"}
+# - **其他资源**: {other_resources if other_resources else "[无]"}
+
+# # 小红书内容（参考）
+# {xiaohongshu_content}
+
+# # 论文摘要
+# {abstract if abstract else "[未提取到摘要]"}
+
+# # PDF 全文内容（重点参考）
+# {pdf_content[:20000] if pdf_content else "[未提供PDF内容]"}
+
+# {images_info}
+
+# # 整理模板
+# {template_content}
+
+# # 要求（⚠️ 严格执行）
+# 1. **结构与信息源**
+#    - **严格按照模板结构与层级**输出；若某章节信息不足，保留标题并标注“[信息不足]”。
+#    - **信息优先级**：PDF全文 > 摘要 > 小红书；冲突处标“[信息冲突]”，不得臆造。
+#    - **不新增一级标题**；可在合适的小节内用表格/列表呈现补充要点。
+
+# 2. **术语与名词保留（关键强化）**
+#    - **保留专有名词、模型名、方法名、算法名、数据集名、指标名**（如 ViT、Swin, ResNet-50, COCO, PSNR/SSIM、BLEU、FID、mIoU 等）**原文大小写与拼写**。
+#    - **首次出现**给出“**英文全称（缩写）+ 中文释义**”（如需）；后续统一使用同一缩写，不随意变体。
+#    - 在模板允许的小节内，优先呈现一张**“术语与符号表（精简版）”**（不单独新增一级标题），字段建议：  
+#      | 名称/符号(原文) | 中文 | 类型(模型/数据集/指标/变量) | 定义/含义 | 单位/默认值 | 备注 |
+#    - **不得将专有名词泛化或替换为通俗表述**；缺失定义时标注“[信息不足]”。
+
+# 3. **数学与公式（保真但克制）**
+#    - 关键公式**保留 LaTeX 形式**（$...$ 或 $$...$$），**不篡改符号与下标/上标**；若推导缺失，给出**用途一句话概述**。
+#    - 选择**最关键的 ≤5 个**公式；其余以要点概述，避免冗长推导。
+#    - 变量/参数在“术语与符号表”中对齐含义与单位。
+
+# 4. **内容精简高效（但信息不丢失）**
+#    - **能用表格/要点不写长段**：概念对比、模块组成、数据与指标、消融项统一**表格优先**。
+#    - 每章节**3–5 段**为上限；采用“**概述一句话 + 2–6 个要点**”结构；避免重复冗余。
+#    - 重点补足以下章节（若模板对应章节名称不同，按语义对应）：
+#      - 文章背景与基本观点（Problem/Gaps/Assumptions）
+#      - 现有解决方案的思路与问题（方法族对比+已知局限）
+#      - 本文提出的思想与方法（总体框架/模块、创新点清单）
+#      - 方法实现细节（训练流程、关键超参、损失函数、数据设置/预处理、复杂度/开销）  
+#      - 方法有效性证明（实验设计：数据集/划分、Baselines、指标、SOTA 对比、消融与显著性）  
+#      - 局限性与外推边界（适用场景/失败模式/未来方向）
+#    - 数值**附单位与设置**（如输入分辨率、batch size、学习率、训练轮次、显存/设备）。
+
+# 5. **图片精选插入**
+#    - 若提供了图片信息，**仅当重要性评分 ≥ 7 分**时插入；评分 <7 以文字总结。
+#    - 使用提供的 **HTML <figure> 标签与原始 Caption**；图片**靠近相关文字段落**插入，避免堆放在文末。
+#    - 图中术语与图名**保持原文**；若需翻译，采用“中文（英文原文）”。
+
+# 6. **准确性与可复现性**
+#    - 数据集（名称/版本/划分）、评测协议、指标定义**尽量明确**；无法确认时标“[信息不足]”。
+#    - SOTA/对比结果建议用表格，含：方法、设置（如分辨率/预训练）、指标均值±方差（若提供）、提升幅度。
+#    - 训练/推理开销（FLOPs、Params、吞吐/延迟、显存）若有，归纳为一张**资源开销表**；无则“[信息不足]”。
+
+# 7. **格式与长度**
+#    - **Markdown** 输出（可含表格与行内/块级公式）；不输出额外解释或自检清单。
+#    - **基本信息必须准确**（日期尽量 YYYY-MM-DD；项目页/其他资源仅填已提供）。
+#    - **长度控制**：保证最终导入 Notion 后**不超过 100 个块**（通常 **5,000–8,000 字符**可达成）。
+
+# 8. **边界与合规**
+#    - 不新增外部链接/引用；不杜撰数据或实验。
+#    - 对于缺失或相互矛盾的信息，**显式标注**“[信息不足]”/“[信息冲突]”。
+
+# 请输出**精炼但信息保真的论文整理**（Markdown 格式，包含必要表格与按规则筛选的图片）。
+# """
         # 使用 Agent 替代直接的 LLM 调用
         digest_generation_agent = Agent(
             name="digest_generation_agent",
             instructions="你是专业的论文整理专家，擅长结构化整理学术论文。你必须详细、完整地填充论文整理模板的所有章节。",
-            model="gpt-5-mini",
+            model=get_tool_model(),
         )
 
         result = await Runner.run(
@@ -1044,6 +1130,20 @@ async def generate_paper_digest(
 
         # 提取Agent返回的文本内容
         digest_content = result.final_output if hasattr(result, 'final_output') else str(result)
+
+        # 🔧 清理 LLM 输出：移除外层的 markdown 代码围栏（如果存在）
+        # DeepSeek 等模型可能会在输出外层包裹 ```markdown ... ```
+        digest_content = digest_content.strip()
+        if digest_content.startswith("```markdown"):
+            # 移除开头的 ```markdown
+            digest_content = digest_content[len("```markdown"):].lstrip('\n')
+        elif digest_content.startswith("```"):
+            # 移除开头的 ```
+            digest_content = digest_content[3:].lstrip('\n')
+
+        # 移除结尾的 ```（如果存在）
+        if digest_content.endswith("```"):
+            digest_content = digest_content[:-3].rstrip('\n')
 
         # 🔧 备用方案：仅在 LLM 完全没有插入图片时才自动插入核心图片
         # 注意：现在的策略是 LLM 只插入 2-3 张核心图片，所以不需要补充所有遗漏的图片
@@ -1530,7 +1630,7 @@ digest_agent = Agent(
 
 你专注于论文整理工作，不处理定时任务相关的事情。
 """,
-    model="gpt-5",
+    model=get_reason_model(),
     tools=[
         fetch_xiaohongshu_post,
         search_arxiv_pdf,
