@@ -58,8 +58,8 @@ package-lock.json
 
 # Generated PDFs and extracted images (user data)
 paper_digest/pdfs/
+paper_digest/outputs/
+paper_digest/images/
 !paper_digest/pdfs/.gitkeep
-
-# Test outputs
-paper_digest/outputs/*.md
 !paper_digest/outputs/.gitkeep
+!paper_digest/images/.gitkeep
