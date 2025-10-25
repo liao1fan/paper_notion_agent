@@ -199,6 +199,45 @@ async def extract_paper_metadata(
 
         _current_paper.update(extracted_info)
 
+        # 如果 PDF 已下载但标题不一致，重新整理文件
+        old_pdf_path = _current_paper.get("pdf_path")
+        correct_title = extracted_info.get("title")
+
+        if old_pdf_path and correct_title and Path(old_pdf_path).exists():
+            old_path = Path(old_pdf_path)
+            expected_path = _get_paper_pdf_path(correct_title)
+
+            # 如果路径不同，说明下载时使用的是错误的标题
+            if old_path != expected_path:
+                try:
+                    logger.info(
+                        "📁 检测到标题不一致，重新整理 PDF 文件",
+                        old_path=str(old_path),
+                        new_path=str(expected_path)
+                    )
+
+                    # 创建新目录
+                    expected_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # 移动 PDF 文件
+                    import shutil
+                    shutil.move(str(old_path), str(expected_path))
+
+                    # 删除旧目录（如果为空）
+                    try:
+                        if old_path.parent != expected_path.parent:
+                            old_path.parent.rmdir()
+                    except:
+                        pass  # 目录不为空，忽略
+
+                    # 更新全局变量中的路径
+                    _current_paper["pdf_path"] = str(expected_path)
+
+                    logger.info("✅ PDF 文件已重新整理到正确路径")
+
+                except Exception as e:
+                    logger.warning(f"重新整理 PDF 文件失败: {e}，继续使用原路径")
+
         elapsed = time.time() - start_time
         logger.info(
             "✅ 论文元数据提取成功",
@@ -347,9 +386,8 @@ async def download_pdf_from_url(
     try:
         logger.info("📥 开始下载 PDF", pdf_url=pdf_url[:100], paper_title=paper_title[:50])
 
-        # 清理文件名
-        safe_title = paper_title[:50].replace('/', '_').replace(':', '_').replace('?', '_')
-        local_path = PDF_DIR / f"{safe_title}.pdf"
+        # 使用新的目录结构：paper_digest/pdfs/{Paper_Title}/paper.pdf
+        local_path = _get_paper_pdf_path(paper_title)
 
         # 下载 PDF
         proxy = os.getenv('http_proxy')
@@ -468,6 +506,58 @@ async def read_local_pdf(
         }, ensure_ascii=False, indent=2)
 
 
+def _get_paper_directory(paper_title: str) -> Path:
+    """
+    为每篇论文创建独立的目录
+
+    目录结构：
+    paper_digest/pdfs/
+    ├── Paper_Title_1/
+    │   ├── Paper_Title_1.pdf
+    │   └── extracted_images/
+    ├── Paper_Title_2/
+    │   ├── Paper_Title_2.pdf
+    │   └── extracted_images/
+
+    Args:
+        paper_title: 论文标题（完整标题，不截断）
+
+    Returns:
+        论文目录的 Path 对象
+    """
+    # 清理标题中的特殊字符，但保留完整长度
+    safe_title = paper_title.replace('/', '_').replace(':', '_').replace('?', '_').replace('\\', '_').strip()
+    # 限制最大长度为 150 字符，避免文件系统限制（通常 255）
+    safe_title = safe_title[:150]
+    paper_dir = PDF_DIR / safe_title
+    paper_dir.mkdir(parents=True, exist_ok=True)
+
+    return paper_dir
+
+
+def _get_paper_pdf_path(paper_title: str) -> Path:
+    """获取论文 PDF 的保存路径
+
+    返回格式: paper_digest/pdfs/{Paper_Title}/{Paper_Title}.pdf
+
+    Args:
+        paper_title: 论文标题（完整标题）
+    """
+    paper_dir = _get_paper_directory(paper_title)
+    # 清理文件名（移除特殊字符），使用与目录相同的名称
+    safe_filename = paper_title.replace('/', '_').replace(':', '_').replace('?', '_').replace('\\', '_').strip()
+    safe_filename = safe_filename[:150]  # 与目录名保持一致
+    return paper_dir / f"{safe_filename}.pdf"
+
+
+def _get_paper_images_dir(paper_title: str) -> Path:
+    """获取论文图片提取目录的路径"""
+    paper_dir = _get_paper_directory(paper_title)
+    images_dir = paper_dir / "extracted_images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    return images_dir
+
+
 def _read_pdf_file(pdf_path: str):
     """读取 PDF 文件内容和元数据（内部函数）"""
     doc = fitz.open(pdf_path)
@@ -519,6 +609,163 @@ def _read_pdf_file(pdf_path: str):
     return pdf_content, metadata_dict
 
 
+def _auto_insert_images(
+    markdown_content: str,
+    extracted_images: list,
+    relative_image_path: str
+) -> str:
+    """
+    自动将图片插入到 Markdown 的适当位置
+
+    改进策略：
+    1. 检查 Markdown 是否已经包含图片引用（如果有，只插入缺失的）
+    2. 更智能的章节匹配：
+       - 分析 caption 和图片编号
+       - Figure 1-2 通常是方法/架构图 → 方法章节
+       - Table 和后续 Figures 通常是实验结果 → 实验章节
+       - 特殊 Figures（training, ablation）→ 相应章节
+    3. 按编号顺序插入，确保不遗漏
+
+    Args:
+        markdown_content: 原始 Markdown 内容
+        extracted_images: 提取的图片列表
+        relative_image_path: 图片相对路径
+
+    Returns:
+        插入图片后的 Markdown 内容
+    """
+    import re
+
+    # 检查已插入的图片
+    existing_images = set()
+    for match in re.finditer(r'<img src="[^"]*?/([^/"]+)"', markdown_content):
+        existing_images.add(match.group(1))
+
+    # 过滤出需要插入的图片
+    images_to_insert = [img for img in extracted_images if img['filename'] not in existing_images]
+
+    if not images_to_insert:
+        logger.info("所有图片已插入，无需处理")
+        return markdown_content
+
+    logger.info(f"需要插入 {len(images_to_insert)} 张图片")
+
+    # 按 Figure/Table 编号排序
+    def sort_key(img):
+        fig_type = img.get('fig_type', 'Figure')
+        fig_name = img.get('fig_name', '0')
+        try:
+            num = int(fig_name)
+        except:
+            num = 999
+        # Table 优先级低于 Figure
+        return (0 if fig_type == 'Figure' else 1, num)
+
+    images_to_insert.sort(key=sort_key)
+
+    # 智能分组：根据内容和编号
+    method_images = []
+    experiment_images = []
+    other_images = []
+
+    for img in images_to_insert:
+        caption = img.get('caption', '').lower()
+        fig_type = img.get('fig_type', 'Figure')
+        fig_name = img.get('fig_name', '0')
+
+        try:
+            fig_num = int(fig_name)
+        except:
+            fig_num = 999
+
+        # 分类规则
+        if fig_type == 'Figure' and fig_num <= 2:
+            # Figure 1-2 通常是方法/架构图
+            method_images.append(img)
+        elif 'method' in caption or 'architecture' in caption or 'framework' in caption or 'mechanism' in caption or 'optimization' in caption:
+            method_images.append(img)
+        elif 'performance' in caption or 'result' in caption or 'comparison' in caption or 'experiment' in caption or 'training' in caption or fig_type == 'Table':
+            experiment_images.append(img)
+        else:
+            other_images.append(img)
+
+    # 生成图片 HTML
+    def create_image_html(images):
+        html = "\n\n"
+        for img in images:
+            fig_type = img.get('fig_type', 'Figure')
+            fig_name = img.get('fig_name', '')
+            filename = img['filename']
+            caption = img.get('caption', '')
+            html += f'''<figure>
+  <img src="{relative_image_path}/{filename}" alt="{fig_type} {fig_name}">
+  <figcaption>{caption}</figcaption>
+</figure>
+
+'''
+        return html
+
+    modified_content = markdown_content
+
+    # 插入方法相关图片到 "方法实现细节" 章节
+    if method_images:
+        method_pattern = r'(##\s*⚙️\s*方法实现细节.*?)((?=\n##)|$)'
+        if re.search(method_pattern, modified_content, re.DOTALL):
+            images_html = create_image_html(method_images)
+            def replacer(match):
+                section_content = match.group(1)
+                next_section = match.group(2)
+                return section_content + images_html + next_section
+            modified_content = re.sub(method_pattern, replacer, modified_content, flags=re.DOTALL, count=1)
+            logger.info(f"插入 {len(method_images)} 张图片到方法章节")
+        else:
+            # 如果没有"方法实现细节"，尝试"本文方法"
+            method_pattern2 = r'(##\s*💡\s*本文方法.*?)((?=\n##)|$)'
+            if re.search(method_pattern2, modified_content, re.DOTALL):
+                images_html = create_image_html(method_images)
+                def replacer(match):
+                    section_content = match.group(1)
+                    next_section = match.group(2)
+                    return section_content + images_html + next_section
+                modified_content = re.sub(method_pattern2, replacer, modified_content, flags=re.DOTALL, count=1)
+                logger.info(f"插入 {len(method_images)} 张图片到本文方法章节")
+            else:
+                experiment_images.extend(method_images)  # 放到实验章节
+
+    # 插入实验相关图片到 "实验与结果" 章节
+    if experiment_images:
+        result_pattern = r'(##\s*📊\s*实验与结果.*?)((?=\n##)|$)'
+        if re.search(result_pattern, modified_content, re.DOTALL):
+            images_html = create_image_html(experiment_images)
+            def replacer(match):
+                section_content = match.group(1)
+                next_section = match.group(2)
+                return section_content + images_html + next_section
+            modified_content = re.sub(result_pattern, replacer, modified_content, flags=re.DOTALL, count=1)
+            logger.info(f"插入 {len(experiment_images)} 张图片到实验章节")
+        else:
+            # 如果没有实验章节，添加到文档末尾
+            images_html = create_image_html(experiment_images)
+            modified_content += "\n\n---\n\n## 📊 Figures & Tables\n\n" + images_html
+            logger.info(f"插入 {len(experiment_images)} 张图片到文档末尾")
+
+    # 其他图片插入到文档末尾
+    if other_images:
+        images_html = create_image_html(other_images)
+        # 检查是否已有 "Figures & Tables" 章节
+        if "## 📊 Figures & Tables" in modified_content:
+            # 追加到该章节
+            modified_content = modified_content.replace(
+                "## 📊 Figures & Tables\n\n",
+                f"## 📊 Figures & Tables\n\n{images_html}"
+            )
+        else:
+            modified_content += "\n\n---\n\n## 📊 Other Figures\n\n" + images_html
+        logger.info(f"插入 {len(other_images)} 张其他图片")
+
+    return modified_content
+
+
 
 
 
@@ -567,61 +814,142 @@ async def generate_paper_digest(
 
     # 提取 PDF 中的图片（如果提供了 PDF 路径）
     images_info = ""
-    if pdf_path and Path(pdf_path).exists():
+
+    # 优先使用传入的 pdf_path，如果为空则从全局变量获取
+    effective_pdf_path = pdf_path
+    if not effective_pdf_path or not Path(effective_pdf_path).exists():
+        effective_pdf_path = _current_paper.get("pdf_path", "")
+        if effective_pdf_path:
+            logger.info("📄 使用全局变量中的 PDF 路径", pdf_path=effective_pdf_path[:100])
+
+    if effective_pdf_path and Path(effective_pdf_path).exists():
         try:
-            logger.info("🖼️  开始提取 PDF 中的图片", pdf_path=pdf_path[:100])
-            from .pdf_image_extractor import PDFImageExtractor
+            logger.info("🖼️  开始提取 PDF 中的 Figures/Tables", pdf_path=effective_pdf_path[:100])
+            from .pdf_figure_extractor_v2 import PDFFigureExtractorV2
 
-            # 将图片保存到标准位置：paper_digest/pdfs/extracted_images/
-            images_dir = PDF_DIR / "extracted_images"
-            images_dir.mkdir(parents=True, exist_ok=True)
+            # 将图片保存到论文特定目录：paper_digest/pdfs/{Paper_Title}/extracted_images/
+            images_dir = _get_paper_images_dir(paper_title)
 
-            extractor = PDFImageExtractor(str(images_dir))
-            images, blocks = extractor.extract(pdf_path)
+            extractor = PDFFigureExtractorV2(str(images_dir))
+            images, blocks = extractor.extract(effective_pdf_path)
 
             if images:
-                # 智能选择重要图片（而不是全部使用）
-                from .image_selector import select_important_images
+                # V2 提取器已经提供了完整的 Figures/Tables，不需要再选择
+                # 直接使用所有提取的图片（已按重要性排序）
 
-                selected_images = select_important_images(images, max_images=6)
-
-                # 格式化选中的图片信息供 LLM 使用
-                images_list = "\\n".join([
-                    f"- 第 {img['page']} 页：{img['filename']} ({img['width']}x{img['height']} {img['format'].upper()}) - Caption: {img.get('caption', '(无)') if img.get('caption') else '(无)'}"
-                    for img in selected_images
+                # 格式化图片信息供 LLM 使用（详细版，包含完整 caption）
+                images_list = "\n".join([
+                    f"【{img['fig_type']} {img['fig_name']}】\n" +
+                    f"  文件名: {img['filename']}\n" +
+                    f"  Caption: {img.get('caption', '(无caption)') or '(无caption)'}\n" +
+                    f"  页码: 第 {img['page']} 页"
+                    for img in images
                 ])
+
+                # 计算相对路径（从 outputs/ 到 pdfs/{Paper_Title}/extracted_images/）
+                safe_title = paper_title.replace('/', '_').replace(':', '_').replace('?', '_').replace('\\', '_').strip()[:150]
+                relative_image_path = f"../pdfs/{safe_title}/extracted_images"
+
+                # 统计提取来源
+                pdffigures2_count = sum(1 for img in images if img.get('source') == 'pdffigures2')
+                python_count = sum(1 for img in images if img.get('source') == 'python_fallback')
+
                 images_info = f"""
-# 论文关键图片（共 {len(selected_images)} 张，已从 {len(images)} 张中精选）
+# 论文 Figures/Tables（共 {len(images)} 个，已提取）
+
+提取来源：
+- PDFFigures2: {pdffigures2_count} 个 📊
+- Python Fallback: {python_count} 个 🐍
+
+## 图片列表（包含完整 Caption）
 
 {images_list}
 
-**说明**：以下图片已根据重要性精选，应在适当位置插入对应的图片。
-图片文件已保存在本地，可直接引用。
-在 Markdown 中使用以下格式引用图片：
-```
+---
+
+## 🎯 图片插入要求（非常重要！）
+
+你**必须**根据每张图片的 **Caption 内容**智能决定插入位置，而不是简单地全部堆到一个章节。
+
+### 插入格式（统一使用 HTML）
+```html
 <figure>
-  <img src="./images/{{filename}}" alt="图片描述">
-  <figcaption>Figure N: 图片说明</figcaption>
+  <img src="{relative_image_path}/{{filename}}" alt="{{fig_type}} {{fig_name}}">
+  <figcaption>{{完整caption原文}}</figcaption>
 </figure>
 ```
 
-请在以下位置插入图片：
-- 方法章节：插入展示核心方法或架构的图片
-- 实验结果章节：插入展示对比结果或性能指标的图片
-- 其他相关章节：根据内容需要插入对应的图片
+### 智能选择与插入策略（基于重要性评分）
+
+⚠️ **重要：不要插入所有图片！根据图片的重要性评分，只插入高价值的图片。**
+
+#### 评分标准（满分10分，≥7分的图片才插入）：
+
+**评分维度**：
+1. **核心方法理解** (0-4分)
+   - 4分：核心架构图、算法流程图、方法示意图
+   - 3分：方法应用示例、关键组件图、**背景/动机示例图**
+   - 2分：辅助示意图
+   - 0-1分：边缘性示例
+
+2. **实验价值** (0-4分)
+   - 4分：主要性能对比表、核心实验结果
+   - 3分：关键消融实验、重要对比图
+   - 2分：次要实验结果、**背景示例的说明价值**
+   - 0-1分：训练曲线、行为统计、细节图
+
+3. **信息密度** (0-2分)
+   - 2分：一张图包含大量关键信息、**背景示例能直观说明问题**
+   - 1分：信息量中等
+   - 0分：信息可以用文字简单说明
+
+#### 典型评分示例：
+
+- **背景/动机示例**: 核心方法(3分) + 实验价值(2分) + 信息密度(2分) = **7分** ✅
+- 架构/算法图: 核心方法(4分) + 实验价值(1分) + 信息密度(2分) = **7分** ✅
+- 主要性能对比表: 核心方法(1分) + 实验价值(4分) + 信息密度(2分) = **7分** ✅
+- 行为统计表: 核心方法(0分) + 实验价值(2分) + 信息密度(1分) = **3分** ❌
+- 训练曲线/示例: 通常 3-5分 ❌
+
+⚠️ **特别提示**：背景/动机示例图通常出现在论文开头，对理解问题非常有帮助，应该优先插入！
+
+#### 插入位置要求：
+
+1. **背景类图片** → 插入到"🎯 研究背景与动机"章节
+   - 紧跟问题背景或研究动机说明
+   - 帮助读者直观理解要解决的问题
+
+2. **方法类图片** → 插入到"💡 本文方法"或"⚙️ 方法实现细节"章节
+   - 紧跟相关文字说明，不要单独成段
+   - 帮助读者理解核心算法/架构
+
+3. **实验类图片** → 插入到"📊 实验与结果"章节
+   - 放在实验设置和主要结果说明之后
+   - 只插入最核心的性能对比表/图
+
+### 📍 图片文件路径
+{images_dir}
+
+### ⚠️ 插入要求
+- **根据评分选择**：只插入评分 ≥7 分的图片
+- 其他图片用文字总结
+- 必须使用完整路径：`{relative_image_path}/{{filename}}`
+- Caption 保留原文，不要修改
+- 图片紧跟相关文字，不要堆在章节末尾
 """
 
                 logger.info(
-                    "✅ 图片提取和选择完成",
-                    total_images=len(images),
-                    selected_images=len(selected_images),
+                    "✅ Figures/Tables 提取完成",
+                    total=len(images),
+                    pdffigures2=pdffigures2_count,
+                    python_fallback=python_count,
                     images_dir=str(images_dir)
                 )
-                # 保存图片信息到全局变量供后续使用（仅保存选中的）
-                _current_paper["extracted_images"] = selected_images
+                # 保存图片信息到全局变量供后续使用
+                _current_paper["extracted_images"] = images
                 _current_paper["images_dir"] = str(images_dir)
             else:
-                logger.info("ℹ️  PDF 中未找到可提取的图片")
+                logger.info("ℹ️  PDF 中未找到可提取的 Figures/Tables")
 
         except Exception as e:
             logger.warning(f"提取 PDF 图片失败，继续生成没有图片的 Markdown: {e}")
@@ -638,7 +966,7 @@ async def generate_paper_digest(
 - **机构**: {affiliations}
 - **发表时间**: {publication_date}
 - **期刊/会议**: {venue}
-- **标签**: {keywords}
+- **关键词**: {keywords}
 - **项目页**: {project_page if project_page else "[无]"}
 - **其他资源**: {other_resources if other_resources else "[无]"}
 
@@ -676,13 +1004,14 @@ async def generate_paper_digest(
 7. **使用 Markdown 格式**，充分利用标题、列表、表格等结构化元素
 8. **基本信息必须准确填写**（包括完整日期、标签、项目页、其他资源）
 9. **输出长度控制**：确保最终 Markdown 整理转换为 Notion blocks 后不超过 100 个块（通常 5000-8000 字符可保证）
-10. **图片集成**（如果提供了图片信息）：
-    - 在适当位置插入图片引用（如方法章节、结果章节等）
-    - 使用提供的 HTML figure 标签格式引用图片
-    - 每张图片都应有清晰的描述和说明
-    - 确保图片引用与文本内容逻辑对应
+10. **图片精选插入**（如果提供了图片信息）：
+    - ⚠️ **根据重要性评分（≥7分）决定是否插入图片**，不要插入所有图片
+    - 其他图片（评分<7分）用**文字总结**即可
+    - 使用提供的 HTML figure 标签格式，保留完整 Caption 原文
+    - 图片应该插入到相关文字说明的附近，而不是单独堆在章节末尾
+    - 保持笔记精简，避免图片过多影响阅读体验
 
-请输出精简高效的论文整理（Markdown格式）：
+请输出精简高效的论文整理（Markdown格式，包含智能插入的图片）：
 """
 
         response = await _openai_client.chat.completions.create(
@@ -697,6 +1026,24 @@ async def generate_paper_digest(
         )
 
         digest_content = response.choices[0].message.content
+
+        # 🔧 备用方案：仅在 LLM 完全没有插入图片时才自动插入核心图片
+        # 注意：现在的策略是 LLM 只插入 2-3 张核心图片，所以不需要补充所有遗漏的图片
+        if images_info and _current_paper.get("extracted_images"):
+            original_image_count = digest_content.count('<figure>')
+
+            # 只有当 LLM 完全没有插入图片时，才使用备用方案
+            if original_image_count == 0:
+                logger.warning("⚠️  LLM 完全没有插入图片，启用备用方案")
+                digest_content = _auto_insert_images(
+                    digest_content,
+                    _current_paper["extracted_images"],
+                    relative_image_path
+                )
+                final_image_count = digest_content.count('<figure>')
+                logger.info(f"✅ 备用方案已插入 {final_image_count} 张核心图片")
+            else:
+                logger.info(f"✅ LLM 已插入 {original_image_count} 张图片，无需备用方案")
 
         # 保存到文件
         safe_title = paper_title[:50].replace('/', '_').replace(':', '_') if paper_title else "paper"
@@ -817,10 +1164,6 @@ async def save_digest_to_notion(
             except:
                 pass
 
-        # DOI
-        if doi:
-            properties["DOI"] = {"rich_text": [{"text": {"content": doi[:2000]}}]}
-
         # ArXiv ID
         if arxiv_id:
             properties["ArXiv ID"] = {"rich_text": [{"text": {"content": arxiv_id[:2000]}}]}
@@ -837,6 +1180,14 @@ async def save_digest_to_notion(
         # Other Resources - rich_text 类型
         if other_resources:
             properties["Other Resources"] = {"rich_text": [{"text": {"content": other_resources[:2000]}}]}
+
+        # PDF Link - url 类型
+        if pdf_url:
+            properties["PDF Link"] = {"url": pdf_url}
+
+        # Source URL (小红书链接) - url 类型
+        if source_url:
+            properties["Source URL"] = {"url": source_url}
 
         # 转换 Markdown 为 Notion blocks（包含图片处理）
         blocks = await _markdown_to_notion_blocks_with_images(digest_content)
@@ -955,14 +1306,23 @@ async def _markdown_to_notion_blocks_with_images(markdown_text: str) -> list:
         # 检查 images_dir 是否存在，如果不存在则检查备选路径
         images_path = Path(images_dir)
         if not images_path.exists():
-            # 尝试从 digest_content 推断图片目录
+            # 尝试从 digest_content 推断图片目录（后向兼容性）
             logger.warning(f"图片目录不存在: {images_dir}，尝试查找...")
-            # PDF 可能在 paper_digest/pdfs/，提取的图片在 paper_digest/pdfs/extracted_images/
-            alt_images_dir = PROJECT_ROOT / "paper_digest" / "pdfs" / "extracted_images"
-            if alt_images_dir.exists():
-                images_dir = str(alt_images_dir)
-                images_path = alt_images_dir
-                logger.info(f"找到备选图片目录: {images_dir}")
+
+            # 尝试多个备选路径
+            alt_dirs = [
+                # 新的论文特定目录结构（优先）
+                _get_paper_images_dir(_current_paper.get("title", "unknown")),
+                # 旧的通用提取图片目录（后向兼容）
+                PROJECT_ROOT / "paper_digest" / "pdfs" / "extracted_images",
+            ]
+
+            for alt_dir in alt_dirs:
+                if alt_dir.exists():
+                    images_dir = str(alt_dir)
+                    images_path = alt_dir
+                    logger.info(f"找到备选图片目录: {images_dir}")
+                    break
             else:
                 logger.warning("未找到图片目录，将仅转换 Markdown")
                 text_blocks = markdown_to_notion_blocks(markdown_text)
