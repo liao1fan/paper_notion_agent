@@ -1164,7 +1164,9 @@ async def generate_paper_digest(
                 logger.info(f"✅ LLM 已插入 {original_image_count} 张图片，无需备用方案")
 
         # 保存到文件
-        safe_title = paper_title[:50].replace('/', '_').replace(':', '_') if paper_title else "paper"
+        safe_title = paper_title.replace('/', '_').replace(':', '_').replace('?', '_').replace('\\', '_').strip() if paper_title else "paper"
+        # 限制最大长度为 150 字符，避免文件系统限制
+        safe_title = safe_title[:150]
         output_file = OUTPUT_DIR / f"{safe_title}.md"
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(digest_content)
@@ -1480,45 +1482,24 @@ async def _markdown_to_notion_blocks_with_images(markdown_text: str) -> list:
                     logger.warning("未找到本地提取的图片文件")
 
             except Exception as e:
-                logger.warning(f"Notion 图片上传失败，使用外部 URL 替代: {e}")
-                # 降级处理：使用本地文件路径作为外部 URL（如果在本地开发环境）
-                for img in extracted_images:
-                    local_path = img.get('local_path', '')
-                    if local_path:
-                        image_upload_map[img['filename']] = f"file://{local_path}"
+                logger.warning(f"Notion 图片上传失败: {e}")
+                # 降级处理：不使用图片（Notion 不支持 file:// URL）
+                pass
 
-        # 第三步：从 Markdown 提取图片引用并创建 image blocks
-        cleaned_markdown, image_blocks = create_image_blocks_from_markdown(
+        # 使用 V2 版本: 直接从 Markdown 转为 Notion blocks (包含图片)
+        from .notion_image_uploader_v2 import markdown_to_notion_blocks_with_images
+
+        final_blocks = markdown_to_notion_blocks_with_images(
             markdown_text,
             image_upload_map,
             images_dir
         )
 
         logger.info(
-            "提取的 image blocks",
-            count=len(image_blocks),
+            "Markdown 转 Notion blocks 完成",
+            total_blocks=len(final_blocks),
             upload_map_size=len(image_upload_map)
         )
-
-        # 第四步：转换文本部分为 blocks
-        text_blocks = markdown_to_notion_blocks(cleaned_markdown)
-
-        # 第五步：交错排列文本和图片 blocks
-        if image_blocks:
-            final_blocks = interleave_blocks_with_images(
-                text_blocks,
-                image_blocks,
-                markdown_text
-            )
-            logger.info(
-                "Block 交错排列完成",
-                text_count=len(text_blocks),
-                image_count=len(image_blocks),
-                total_count=len(final_blocks)
-            )
-        else:
-            final_blocks = text_blocks
-            logger.info("未找到有效的图片引用，仅使用文本 blocks")
 
         return final_blocks
 

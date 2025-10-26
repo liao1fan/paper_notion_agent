@@ -79,7 +79,8 @@ class NotionImageUploader:
         ext = image_path.suffix.lower()
         content_type = ext_to_mime.get(ext, "image/png")
 
-        logger.info(f"📤 开始上传图片: {image_filename}", file_size=image_path.stat().st_size)
+        file_size = image_path.stat().st_size
+        logger.info(f"📤 开始上传图片: {image_filename} ({file_size} bytes)")
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -127,12 +128,7 @@ class NotionImageUploader:
                 final_data = status_response.json()
 
                 status = final_data.get("status", "unknown")
-                logger.info(
-                    f"✅ 图片上传成功",
-                    file_upload_id=file_upload_id,
-                    status=status,
-                    filename=image_filename
-                )
+                logger.info(f"✅ 图片上传成功: {image_filename} (ID: {file_upload_id}, status: {status})")
 
                 return {
                     "file_upload_id": file_upload_id,
@@ -172,11 +168,7 @@ class NotionImageUploader:
                 logger.warning(f"⚠️  图片上传失败: {image_path}: {e}")
                 failed_paths.append(image_path)
 
-        logger.info(
-            f"✅ 批量上传完成",
-            successful=len(upload_map),
-            failed=len(failed_paths)
-        )
+        logger.info(f"✅ 批量上传完成: 成功 {len(upload_map)}, 失败 {len(failed_paths)}")
 
         return upload_map, failed_paths
 

@@ -114,6 +114,7 @@ paper_agent = Agent(
 3. **转交给 Digest Agent 处理**（立即任务）
    - 使用 transfer_to_digest_agent 将论文整理任务交给专业的 digest_agent
    - 传递必要的信息：链接类型、URL、任何额外的上下文
+   - ⚡ **并行处理**：当用户提供多个链接时，你可以并行调用 transfer_to_digest_agent 处理每个链接，无需等待前一个完成
 
 ⚠️ 重要提示：
 - 你只负责调度和任务管理，不直接处理论文整理
@@ -122,11 +123,18 @@ paper_agent = Agent(
 
 工作流程示例：
 
-**立即执行**：
+**立即执行（单个链接）**：
 用户: "帮我整理这篇论文 https://www.xiaohongshu.com/explore/xxx"
 你:
   1. 调用 identify_link_type -> 识别为小红书链接
   2. 调用 transfer_to_digest_agent -> 转交给 digest_agent
+
+**立即执行（多个链接，并行处理）**：
+用户: "帮我整理这三篇论文：链接1、链接2、链接3"
+你:
+  1. 识别出3个链接
+  2. 并行调用 transfer_to_digest_agent 3次（同时处理，不等待）
+  3. 告诉用户正在并行处理3篇论文
 
 **定时任务**：
 用户: "1分钟后，https://xxx 提取出来并整理到notion"

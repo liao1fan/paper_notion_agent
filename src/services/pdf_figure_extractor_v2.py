@@ -180,6 +180,7 @@ class PDFFigureExtractorV2:
                 pdf_path,
                 "-m", str(self.pdffigures2_output_dir) + "/",
                 "-d", str(self.pdffigures2_output_dir) + "/",
+                "-i", "300",  # 设置 DPI 为 300（高质量）
                 "-c"  # 包含 regionless-captions
             ]
 
@@ -275,8 +276,8 @@ class PDFFigureExtractorV2:
                 region_bbox = self._detect_figure_region_by_density(page, caption_bbox)
 
                 if region_bbox:
-                    # 渲染为 PNG（150 DPI）
-                    zoom = 150 / 72
+                    # 渲染为 PNG（300 DPI，与 pdffigures2 保持一致）
+                    zoom = 300 / 72
                     mat = fitz.Matrix(zoom, zoom)
                     pix = page.get_pixmap(matrix=mat, clip=region_bbox)
 
